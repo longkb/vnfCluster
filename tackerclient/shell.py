@@ -48,6 +48,7 @@ from tackerclient.i18n import _
 from tackerclient.tacker.v1_0.events import events
 from tackerclient.tacker.v1_0 import extension
 from tackerclient.tacker.v1_0.nfvo import vim
+from tackerclient.tacker.v1_0.nfvo import vnfcluster
 from tackerclient.tacker.v1_0.nfvo import vnffg
 from tackerclient.tacker.v1_0.nfvo import vnffgd
 from tackerclient.tacker.v1_0.vm import vnf
@@ -155,6 +156,17 @@ COMMAND_V1 = {
 
     'classifier-list': vnffg.ListFC,
     'classifier-show': vnffg.ShowFC,
+
+    'vnf-cluster create': vnfcluster.CreateCluster,
+    'vnf-cluster delete': vnfcluster.DeleteCluster,
+    'vnf-cluster list': vnfcluster.ListCluster,
+    'vnf-cluster show': vnfcluster.ShowCluster,
+
+    'vnf-cluster member add': vnfcluster.AddClusterMember,
+    'vnf-cluster member show': vnfcluster.ShowClusterMember,
+    'vnf-cluster member list': vnfcluster.ListClusterMember,
+    'vnf-cluster member update': vnfcluster.UpdateClusterMember,
+    'vnf-cluster member delete': vnfcluster.DeleteClusterMember,
 }
 
 COMMANDS = {'1.0': COMMAND_V1}
