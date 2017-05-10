@@ -362,6 +362,11 @@ class Client(ClientBase):
     fcs_path = '/classifiers'
     fc_path = '/classifiers/%s'
 
+    clusters_path = '/vnfclusters'
+    cluster_path = '/vnfclusters/%s'
+    cluster_members_path = '/vnfclustermembers'
+    cluster_member_path = '/vnfclustermembers/%s'
+
     # API has no way to report plurals, so we have to hard code them
     # EXTED_PLURALS = {}
 
@@ -618,3 +623,34 @@ class Client(ClientBase):
     @APIParamsCall
     def show_classifier(self, classifier, **_params):
         return self.get(self.fc_path % classifier, params=_params)
+
+    @APIParamsCall
+    def create_vnfcluster(self, body=None):
+        return self.post(self.clusters_path, body)
+
+    @APIParamsCall
+    def list_vnfclusters(self, retrieve_all=True, **_params):
+        clusters = self.list('vnfclusters', self.clusters_path, retrieve_all, **_params)
+        return clusters
+
+    @APIParamsCall
+    def delete_vnfcluster(self, vnfcluster):
+        return self.delete(self.cluster_path % vnfcluster)
+
+    @APIParamsCall
+    def list_vnfclustermembers(self, retrieve_all=True, **_params):
+        clusters = self.list('vnfclustermembers',
+                             self.cluster_members_path,
+                             retrieve_all,
+                             **_params)
+        return clusters
+
+    @APIParamsCall
+    def show_vnfclustermember(self, vnfcluster, **_params):
+        member = self.get(self.cluster_member_path % vnfcluster,
+                          params=_params)
+        return member
+
+    @APIParamsCall
+    def delete_vnfclustermember(self, vnfcluster):
+        return self.delete(self.cluster_member_path % vnfcluster)
