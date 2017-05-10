@@ -17,6 +17,7 @@
 import inspect
 import six
 import yaml
+import time
 
 import eventlet
 from oslo_config import cfg
@@ -239,8 +240,7 @@ class VNFMPlugin(vnfm_db.VNFMPluginDb, VNFMMgmtMixin):
         mgmt_url = vnf_dict['mgmt_url']
         if 'monitoring_policy' in dev_attrs and mgmt_url:
             def action_cb(action):
-                action_cls = monitor.ActionPolicy.get_policy(action,
-                                                             infra_driver)
+                action_cls = monitor.ActionPolicy.get_policy(action)
                 if action_cls:
                     action_cls.execute_action(self, hosting_vnf['vnf'])
 
@@ -360,6 +360,8 @@ class VNFMPlugin(vnfm_db.VNFMPluginDb, VNFMMgmtMixin):
         return vnf_dict
 
     def create_vnf(self, context, vnf):
+        start_time = time.time()
+
         vnf_info = vnf['vnf']
         name = vnf_info['name']
         if self._get_by_name(context, vnfm_db.VNF, name):
@@ -399,6 +401,18 @@ class VNFMPlugin(vnfm_db.VNFMPluginDb, VNFMMgmtMixin):
                 self.add_vnf_to_monitor(vnf_dict, infra_driver)
             self.config_vnf(context, vnf_dict)
         self.spawn_n(create_vnf_wait)
+        end_time = time.time()
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("VNF Create Total Time : %s"), end_time-start_time)
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
         return vnf_dict
 
     # not for wsgi, but for service to create hosting vnf
@@ -731,7 +745,7 @@ class VNFMPlugin(vnfm_db.VNFMPluginDb, VNFMMgmtMixin):
         # validate policy action
         action = policy['action_name']
         policy_ = None
-        if action not in constants.DEFAULT_ALARM_ACTIONS:
+        if action not in (constants.DEFAULT_ALARM_ACTIONS + constants.CLUSTER_ALARM_ACTIONS):
             policy_ = self.get_vnf_policy(context, action, vnf_id)
             if not policy_:
                 raise exceptions.VnfPolicyNotFound(
@@ -759,10 +773,6 @@ class VNFMPlugin(vnfm_db.VNFMPluginDb, VNFMMgmtMixin):
             cp = policy['properties']['resize_compute']['condition'].\
                 get('comparison_operator')
             if bckend_policy_type == constants.POLICY_SCALING:
-                if vnf_dict['status'] != constants.ACTIVE:
-                    LOG.info(context, vnf_dict,
-                             "Scaling Policy action skipped")
-                    return
                 action = 'scaling'
                 scale = {}
                 scale.setdefault('scale', {})
@@ -774,6 +784,24 @@ class VNFMPlugin(vnfm_db.VNFMPluginDb, VNFMMgmtMixin):
                                                              infra_driver)
                 if action_cls:
                     action_cls.execute_action(self, vnf_dict, scale)
+
+        ## For Cluster 
+        if policy['action_name'] in constants.CLUSTER_ALARM_ACTIONS:
+            action = policy['action_name']
+            LOG.debug(_('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'))
+            LOG.debug(_('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'))
+            LOG.debug(_('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'))
+            LOG.debug(_('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'))
+            LOG.debug(_('Cluster Policy : %s'), policy)
+            LOG.debug(_('Cluster vnf_dict : %s'), vnf_dict)
+            LOG.debug(_('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'))
+            LOG.debug(_('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'))
+            LOG.debug(_('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'))
+            LOG.debug(_('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'))
+            infra_driver, vim_auth = self._get_infra_driver(context, vnf_dict)
+            action_cls = monitor.ActionPolicy.get_policy(action)
+            if action_cls:
+                action_cls.execute_action(self, vnf_dict)
 
     def create_vnf_trigger(
             self, context, vnf_id, trigger):

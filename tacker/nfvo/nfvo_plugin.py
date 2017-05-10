@@ -18,6 +18,7 @@ import os
 import threading
 import time
 import uuid
+import yaml
 
 from cryptography import fernet
 from oslo_config import cfg
@@ -45,7 +46,7 @@ CONF = cfg.CONF
 
 
 def config_opts():
-    return [('nfvo_vim', NfvoPlugin.OPTS)]
+    return [('nfvo', NfvoPlugin.OPTS)]
 
 
 class NfvoPlugin(nfvo_db.NfvoPluginDb, vnffg_db.VnffgPluginDbMixin):
@@ -404,3 +405,277 @@ class NfvoPlugin(nfvo_db.NfvoPluginDb, vnffg_db.VnffgPluginDbMixin):
                                         vim_auth=vim_obj['auth_cred'],
                                         resource_type=resource,
                                         resource_name=name)
+
+    ############################################################################################
+
+    def recovery_action(self, context, vnf_id):
+        def _create_new_vnf_cluster(context, cluster_name, vnf_id):
+            def _make_vnf_name(cluster_name):
+                cluster_instance = str(uuid.uuid4())
+                return cluster_name + '-vnf-' + cluster_instance
+            
+            vnf = vnfm_plugin.get_vnf(context, vnf_id)
+            vnfd_dict = yaml.load(vnf['vnfd']['attributes']['vnfd'])
+            LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+            LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+            LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+            vnf_info = {}
+            vnf_info['tenant_id'] = vnf['tenant_id']
+            vnf_info['vnfd_id'] = vnf['vnfd_id']
+            vnf_name = _make_vnf_name(cluster_name)
+            pre_vnf_dict = self._make_vnf_create_dict(vnf_info, vnf_name)
+            LOG.debug(_("_create_new_vnf_cluster vnfd_dict : %s"), vnfd_dict)
+            LOG.debug(_("_create_new_vnf_cluster vnf : %s"), vnf)
+            vnf_dict = vnfm_plugin.create_vnf(context, pre_vnf_dict)
+            ## Need to find appropriate Func to wait for creating VNF
+            while(1):
+                LOG.debug(_("create_vnfcluster new_vnf_dict.get('status'): %s"), vnf_dict.get('status'))
+                if vnf_dict.get('status') == 'ACTIVE':
+                    break
+                time.sleep(4)
+            return vnf_dict
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("recovery_action !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+
+        LOG.debug(_("recovery_action vnf_id : %s"), vnf_id)
+        vnfm_plugin = manager.TackerManager.get_service_plugins()['VNFM']
+        vnf = vnfm_plugin.get_vnf(context, vnf_id)
+        vnfd_dict = yaml.load(vnf['vnfd']['attributes']['vnfd'])
+        target_list = self._get_policy_property(vnfd_dict, 'targets')
+        
+        start_time = time.time()
+        vnfclustermembers = self.get_vnfclustermembers(context)
+        LOG.debug(_("recovery_action vnfclustermember : %s"), vnfclustermembers)
+        port_id = None
+        cluster_id = None
+        member_id = None
+        fault_member = None
+        fault_lb_member_id = None
+        for member in vnfclustermembers:
+            if member['vnf_info']['vnf_id'] == vnf_id:
+                fault_member = member['id']
+                fault_lb_member_id = member['lb_member_id']
+                LOG.error(_("This member is Fault : %s"), member['id'])
+            if member['role'] == 'STANDBY':
+                LOG.debug(_("STNADBY vnfmember : %s"), member['id'])
+                LOG.debug(_("STNADBY vnfmember [port_id] : %s"), member['vnf_info']['port_id'])
+                cluster_id = member['cluster_id']
+                port_id = member['vnf_info']['port_id']
+                member_id = member['id']
+        vnfcluster = self.get_vnfcluster(context, cluster_id)
+        LOG.debug(_("recovery_action vnfcluster : %s"), vnfcluster)
+        vim_obj = self._get_vim_from_vnf(context,
+                                         member['vnf_info']['vnf_id'])
+        driver_type = vim_obj['type']
+        lb_result = vnfcluster['policy_info']['loadbalancer']
+        lb_member_id = self._vim_drivers.invoke(driver_type, 'pool_member_add',
+                                                net_port_id=port_id,
+                                                lb_info=lb_result,
+                                                auth_attr=vim_obj['auth_cred'])
+        
+        end_time = time.time()
+        LOG.debug(_("Total Time : %s"), end_time-start_time)
+        
+
+        self._update_member_lb_id(context, member_id, lb_member_id)        
+
+        ha_result = vnfcluster['policy_info']['ha_cluster']
+        self._update_member_role(context, member_id, 'ACTIVE')
+        new_vnf_dict = _create_new_vnf_cluster(context, vnfcluster['name'], vnf_id)
+        
+        vnf_resource = vnfm_plugin.get_vnf_resources(context, new_vnf_dict.get('id'))
+        vnf_info = {}
+        vnf_cp = list()
+        vnf_info['vnf_id'] = new_vnf_dict['id']
+        vnf_info['vm_id'] = new_vnf_dict['instance_id']
+        for resource in vnf_resource:
+            if resource['name'] in target_list:
+                vnf_cp.append(resource['id'])
+                break
+        vnf_info['port_id'] = vnf_cp[0]
+        cluster_member_dict = self._make_cluster_member_dict(cluster_id, 3, 'STANDBY', vnf_info)
+        cluster_member_info = self._create_cluster_member(context, cluster_member_dict)        
+        
+        self._vim_drivers.invoke(driver_type, 'pool_member_remove',
+                                 lb_id=lb_result['loadbalancer'],
+                                 pool_id=lb_result['pool'],
+                                 member_id=fault_lb_member_id,
+                                 auth_attr=vim_obj['auth_cred'])
+        self.delete_vnfclustermember(context, fault_member)
+        vnfm_plugin.delete_vnf(context, vnf_id)
+
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+
+    def _make_vnf_create_dict(self, cluster, name):
+        vnf_dict = {}
+        c = {}
+        c['description'] = ''
+        c['tenant_id'] = cluster['tenant_id']
+        c['vim_id'] = ''
+        c['name'] = name
+        c['placement_attr'] = {}
+        c['attributes'] = {}
+        c['vnfd_id'] = cluster['vnfd_id']
+        vnf_dict['vnf'] = c
+        LOG.debug(_("_make_policy_dict c : %s"), c)
+        return vnf_dict
+
+    def _create_cluster(self, context, cluster):
+        cluster_dict = self._create_cluster_pre(context, cluster)
+        LOG.debug(_('vnf_dict %s'), cluster_dict)
+        return cluster_dict
+
+    def _create_cluster_member(self, context, cluster_member):
+        cluster_member_dict = self._create_cluster_member_pre(context, cluster_member)
+        LOG.debug(_('cluster_member_dict %s'), cluster_member_dict)
+        return cluster_member_dict
+
+    def _make_cluster_member_dict(self, cluster_id, index, role, vnf_info):
+        cluster_member_dict = {}
+        cluster_member_dict['cluster_id'] = cluster_id
+        cluster_member_dict['index'] = index
+        cluster_member_dict['role'] = role
+        cluster_member_dict['vnf_info'] = vnf_info
+        LOG.debug(_("_make_cluster_member_dict c : %s"), cluster_member_dict)
+        return cluster_member_dict
+    
+    def _get_policy_property(self, vnfd_dict, prop_name):
+            polices = vnfd_dict['topology_template'].get('policies', [])
+            prop = None
+            for policy_dict in polices:
+                for name, policy in policy_dict.items():
+                    if(policy.get('type') == constants.POLICY_LOADBALANCE):
+                        prop = policy.get('properties')[prop_name]
+                        LOG.debug(_("create_vnfcluster prop: %s"), prop)
+            return prop
+
+    @log.log
+    def create_vnfcluster(self, context, vnfcluster):
+
+        
+        def _create_vnf_cluster(cluster):
+            def _make_vnf_name(cluster_name):
+                cluster_instance = str(uuid.uuid4())
+                return cluster_name + '-vnf-' + cluster_instance
+            
+            cluster_name = _make_vnf_name(cluster['name'])
+            pre_vnf_dict = self._make_vnf_create_dict(cluster, cluster_name)
+            vnf_dict = vnfm_plugin.create_vnf(context, pre_vnf_dict)
+            ## Need to find appropriate Func to wait for creating VNF
+            while(1):
+                LOG.debug(_("create_vnfcluster new_vnf_dict.get('status'): %s"), vnf_dict.get('status'))
+                if vnf_dict.get('status') == 'ACTIVE':
+                    break
+                time.sleep(4)
+            return vnf_dict
+        
+
+
+        cluster_info = vnfcluster['vnfcluster']
+        vnfm_plugin = manager.TackerManager.get_service_plugins()['VNFM']
+        vnfd = vnfm_plugin.get_vnfd(context, cluster_info['vnfd_id'])
+        vnfd_dict = yaml.load(vnfd['attributes']['vnfd'])
+        target_list = self._get_policy_property(vnfd_dict, 'targets')
+        ha_policy = {}
+        ha_prop = None
+        node_template = vnfd_dict['topology_template'].get('node_templates', [])
+        for node in node_template:
+            if node_template[node]['type'] == 'tosca.nodes.nfv.VDU.Tacker':
+                ha_prop = node_template[node]['capabilities']['nfv_ha_cluster']['properties']
+        if ha_prop:
+            ha_policy['ha_cluster'] = ha_prop
+        vnf_dict = None
+        vnf_cp = list()
+        active = int(cluster_info['active'])
+        standby = int(cluster_info['standby'])
+
+        # 1. Create DB(Cluster)
+        cluster_dict = self._create_cluster(context, vnfcluster)
+        cluster_id = cluster_dict['id']
+        
+        # 2. Create ACTIVE VNF
+        member_id_list = []
+        for index in xrange(active):
+            vnf_dict = _create_vnf_cluster(cluster_info)
+            vnf_resource = vnfm_plugin.get_vnf_resources(context, vnf_dict.get('id'))
+            vnf_info = {}
+            vnf_info['vnf_id'] = vnf_dict['id']
+            vnf_info['vm_id'] = vnf_dict['instance_id']
+            for resource in vnf_resource:
+                if resource['name'] in target_list:
+                    vnf_cp.append(resource['id'])
+                    break
+            vnf_info['port_id'] = vnf_cp[index]
+            cluster_member_dict = self._make_cluster_member_dict(cluster_id, index, 'ACTIVE', vnf_info)
+            cluster_member_info = self._create_cluster_member(context, cluster_member_dict)
+            member_id_list.append(cluster_member_info['id'])
+
+        # 3. Create STANBY VNF and DB(Cluster Member)
+        for index in xrange(active, active+standby):  
+            vnf_dict = _create_vnf_cluster(cluster_info)
+            vnf_resource = vnfm_plugin.get_vnf_resources(context, vnf_dict.get('id'))
+            vnf_info = {}
+            vnf_info['vnf_id'] = vnf_dict['id']
+            vnf_info['vm_id'] = vnf_dict['instance_id']
+            for resource in vnf_resource:
+                if resource['name'] in target_list:
+                    vnf_cp.append(resource['id'])
+                    break
+            vnf_info['port_id'] = vnf_cp[index]
+            cluster_member_dict = self._make_cluster_member_dict(cluster_id, index, 'STANDBY', vnf_info)
+            self._create_cluster_member(context, cluster_member_dict)
+
+
+        # 4. Create Load-balancer for cluster
+        lb_pool = self._get_policy_property(vnfd_dict, 'pool')
+        lb_vip = self._get_policy_property(vnfd_dict, 'vip')
+        vim_obj = self._get_vim_from_vnf(context,
+                                         vnf_dict.get('id'))
+        driver_type = vim_obj['type']
+        lb_result = self._vim_drivers.invoke(driver_type, 'create_loadbalancer',
+                                             lb_pool=lb_pool,
+                                             lb_vip=lb_vip,
+                                             auth_attr=vim_obj['auth_cred'])
+        
+        ha_policy['loadbalancer'] = lb_result
+        self._update_ha_policy(context, cluster_id, ha_policy)
+        #self._update_lb_policy(context, cluster_id, lb_result)
+        for index in xrange(active):
+            lb_member_id = self._vim_drivers.invoke(driver_type, 'pool_member_add',
+                                                    net_port_id=vnf_cp[index],
+                                                    lb_info=lb_result,
+                                                    auth_attr=vim_obj['auth_cred'])
+            LOG.debug(_("create_vnfcluster member_result : %s"), lb_member_id)
+            self._update_member_lb_id(context, member_id_list[index], lb_member_id)
+
+
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+
+        LOG.debug(_("create_vnfcluster lb_result : %s"), lb_result)
+        LOG.debug(_("create_vnfcluster vnfcluster : %s"), vnfcluster)
+        LOG.debug(_("create_vnfcluster cluster_dict : %s"), cluster_dict)
+        LOG.debug(_("create_vnfcluster vnfd : %s"), vnfd)
+        LOG.debug(_("create_vnfcluster vnfd_dict: %s"), vnfd_dict)
+        LOG.debug(_("create_vnfcluster vnf_cp: %s"), vnf_cp)
+        LOG.debug(_("create_vnfcluster target_list: %s"), target_list)
+        LOG.debug(_("create_vnfcluster cluster_id: %s"), cluster_id)
+        LOG.debug(_("create_vnfcluster driver_type: %s"), driver_type)
+        LOG.debug(_("create_vnfcluster vim_obj: %s"), vim_obj)
+
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.debug(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        # cluster_dict['loadbalancer'] = lb_result
+        return cluster_dict

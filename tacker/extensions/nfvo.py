@@ -20,8 +20,10 @@ import six
 from tacker._i18n import _
 from tacker.api import extensions
 from tacker.api.v1 import attributes as attr
+from tacker.api.v1 import base
 from tacker.api.v1 import resource_helper
 from tacker.common import exceptions
+from tacker import manager
 from tacker.plugins.common import constants
 from tacker.services import service_base
 
@@ -215,6 +217,10 @@ class ClassifierInUse(exceptions.InUse):
 
 class ClassifierNotFoundException(exceptions.NotFound):
     message = _('Classifier %(classifier_id)s could not be found')
+
+class VnfClusterInUse(exceptions.InUse):
+    message = _('VnfCluster %(cluster_id)s is still in use')
+
 
 
 RESOURCE_ATTRIBUTE_MAP = {
@@ -557,7 +563,96 @@ RESOURCE_ATTRIBUTE_MAP = {
             'allow_put': False,
             'is_visible': True,
         },
-    }
+    },
+    'vnfclusters': {
+        'id': {
+            'allow_post': False,
+            'allow_put': False,
+            'validate': {'type:uuid': None},
+            'is_visible': True,
+            'primary_key': True
+        },
+        'tenant_id': {
+            'allow_post': True,
+            'allow_put': False,
+            'validate': {'type:string': None},
+            'required_by_policy': True,
+            'is_visible': True
+        },
+        'vnfd_id': {
+            'allow_post': True,
+            'allow_put': False,
+            'validate': {'type:uuid': None},
+            'is_visible': True,
+        },
+        'name': {
+            'allow_post': True,
+            'allow_put': False,
+            'validate': {'type:string': None},
+            'is_visible': True,
+        },
+        'active': {
+            'allow_post': True,
+            'allow_put': False,
+            'is_visible': True,
+            'default': 1,
+        },
+        'standby': {
+            'allow_post': True,
+            'allow_put': False,
+            'is_visible': True,
+            'default': 0,
+        },
+        'policy_info': {
+            'allow_post': False,
+            'allow_put': False,
+            'validate': {'type:dict_or_nodata': None},
+            'is_visible': True,
+        },
+        'status': {
+            'allow_post': False,
+            'allow_put': False,
+            'is_visible': True,
+        },
+    },
+    'vnfclustermembers': {
+        'id': {
+            'allow_post': False,
+            'allow_put': False,
+            'validate': {'type:uuid': None},
+            'is_visible': True,
+            'primary_key': True
+        },
+        'cluster_id': {
+            'allow_post': True,
+            'allow_put': False,
+            'validate': {'type:uuid': None},
+            'is_visible': True,
+        },
+        'index': {
+            'allow_post': False,
+            'allow_put': False,
+            'is_visible': True,
+        },
+        'role': {
+            'allow_post': True,
+            'allow_put': False,
+            'validate': {'type:string': None},
+            'is_visible': True,
+        },
+        'lb_member_id': {
+            'allow_post': False,
+            'allow_put': False,
+            'validate': {'type:uuid': None},
+            'is_visible': True,
+        },
+        'vnf_info': {
+            'allow_post': False,
+            'allow_put': False,
+            'validate': {'type:dict_or_nodata': None},
+            'is_visible': True,
+        },
+    },
 }
 
 

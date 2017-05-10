@@ -28,6 +28,7 @@ import six
 from tacker.common import clients
 from tacker.common import driver_manager
 from tacker import context as t_context
+from tacker import manager
 from tacker.db.common_services import common_services_db
 from tacker.plugins.common import constants
 from tacker.vnfm.infra_drivers.openstack import openstack
@@ -219,26 +220,22 @@ class VNFAlarmMonitor(object):
         params = dict()
         params['vnf_id'] = vnf['id']
         params['mon_policy_name'] = policy_name
+        _log_monitor_events(t_context.get_admin_context(),
+                            vnf,
+                            "update vnf with alarm")
         driver = policy_dict['triggers']['resize_compute'][
             'event_type']['implementation']
         policy_action = policy_dict['triggers']['resize_compute'].get('action')
         if not policy_action:
-            _log_monitor_events(t_context.get_admin_context(),
-                                vnf,
-                                "Alarm not set: policy action missing")
             return
         alarm_action_name = policy_action['resize_compute'].get('action_name')
         if not alarm_action_name:
-            _log_monitor_events(t_context.get_admin_context(),
-                                vnf,
-                                "Alarm not set: alarm action name missing")
             return
         params['mon_policy_action'] = alarm_action_name
         alarm_url = self.call_alarm_url(driver, vnf, params)
-        details = "Alarm URL set successfully: %s" % alarm_url
         _log_monitor_events(t_context.get_admin_context(),
                             vnf,
-                            details)
+                            "Alarm url invoked")
         return alarm_url
         # vnf['attribute']['alarm_url'] = alarm_url ---> create
         # by plugin or vm_db
@@ -332,11 +329,25 @@ class ActionRespawn(ActionPolicy):
                                 "ActionRespawnPolicy complete")
             LOG.info(_('respawned new vnf %s'), new_vnf_dict['id'])
 
+############################ Cluster ##############################
+@ActionPolicy.register('loadbalancer')
+class ActionRespawn(ActionPolicy):
+    @classmethod
+    def execute_action(cls, plugin, vnf_dict):
+        LOG.error(_('ActionRespawn loadbalancer vnf %s dead'), vnf_dict['id'])
+        context = t_context.get_admin_context()
+        nfvo_plugin = manager.TackerManager.get_service_plugins()['NFVO']
+        newvnf_id = nfvo_plugin.recovery_action(context, vnf_dict['id'])
+        LOG.debug(_('ActionRespawn loadbalancer newvnf : %s'), newvnf_id)
+        
+
+###################################################################
 
 @ActionPolicy.register('respawn', 'openstack')
 class ActionRespawnHeat(ActionPolicy):
     @classmethod
     def execute_action(cls, plugin, vnf_dict):
+        start_time = time.time()
         vnf_id = vnf_dict['id']
         LOG.info(_('vnf %s is dead and needs to be respawned'), vnf_id)
         attributes = vnf_dict['attributes']
@@ -386,6 +397,21 @@ class ActionRespawnHeat(ActionPolicy):
                 _delete_heat_stack(vim_res['vim_auth'])
                 vnf_dict['attributes'].pop('alarm_url')
                 _respin_vnf()
+            
+        end_time = time.time()
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("ActionRespawnHeat Time Result : %s"), end_time-start_time)
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+        LOG.error(_("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
 
 
 @ActionPolicy.register('scaling')
@@ -393,10 +419,10 @@ class ActionAutoscalingHeat(ActionPolicy):
     @classmethod
     def execute_action(cls, plugin, vnf_dict, scale):
         vnf_id = vnf_dict['id']
+        plugin.create_vnf_scale(t_context.get_admin_context(), vnf_id, scale)
         _log_monitor_events(t_context.get_admin_context(),
                             vnf_dict,
                             "ActionAutoscalingHeat invoked")
-        plugin.create_vnf_scale(t_context.get_admin_context(), vnf_id, scale)
 
 
 @ActionPolicy.register('log')

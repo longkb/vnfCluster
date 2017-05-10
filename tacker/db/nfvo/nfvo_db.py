@@ -33,6 +33,10 @@ from tacker.extensions import nfvo
 from tacker import manager
 from tacker.plugins.common import constants
 
+######MinSik
+from oslo_log import log as logging
+LOG = logging.getLogger(__name__)
+####
 
 VIM_ATTRIBUTES = ('id', 'type', 'tenant_id', 'name', 'description',
                   'placement_attr', 'shared', 'is_default',
@@ -65,6 +69,28 @@ class VimAuth(model_base.BASE, models_v1.HasId):
     vim_project = sa.Column(types.Json, nullable=False)
     auth_cred = sa.Column(types.Json, nullable=False)
 
+
+class VnfCluster(model_base.BASE, models_v1.HasTenant, models_v1.HasId):
+    """VNF Cluster Data Model"""
+    name = sa.Column(sa.String(255), nullable=False)
+
+    # List of associated VNFs
+    vnfd_id = sa.Column(sa.String(255), nullable=False)
+    active = sa.Column(sa.Integer, nullable=False)
+    standby = sa.Column(sa.Integer, nullable=False)
+    cluster_members = orm.relationship("VnfClusterMember", backref="vnfcluster")
+    policy_info = sa.Column(types.Json)
+    status = sa.Column(sa.String(255), nullable=False)
+
+
+class VnfClusterMember(model_base.BASE, models_v1.HasId):
+    """VNF Cluster Member Data Model"""
+
+    cluster_id = sa.Column(types.Uuid, sa.ForeignKey('vnfclusters.id'))
+    index = sa.Column(sa.Integer, nullable=False)
+    role = sa.Column(sa.String(255), nullable=False)
+    lb_member_id = sa.Column(sa.String(255))
+    vnf_info = sa.Column(types.Json)
 
 class NfvoPluginDb(nfvo.NFVOPluginBase, db_base.CommonDbMixin):
 
@@ -244,3 +270,119 @@ class NfvoPluginDb(nfvo.NFVOPluginBase, db_base.CommonDbMixin):
     def get_default_vim(self, context):
         vim_db = self._get_default_vim(context)
         return self._make_vim_dict(vim_db, mask_password=False)
+
+    ## Define Cluster DB ##############################################
+    def _make_cluster_dict(self, cluster_db, fields=None):
+        res = {}
+        key_list = ('id', 'tenant_id', 'name', 'vnfd_id', 'active',
+                    'standby', 'policy_info', 'status')
+        res.update((key, cluster_db[key]) for key in key_list)
+        return self._fields(res, fields)
+
+    def _make_member_dict(self, member_db, fields=None):
+        res = {}
+        key_list = ('id', 'cluster_id', 'index', 'role', 'lb_member_id', 'vnf_info')
+        res.update((key, member_db[key]) for key in key_list)
+        return self._fields(res, fields)
+
+    def _create_cluster_status(self, context, cluster_id, new_status):
+        with context.session.begin(subtransactions=True):
+            query = (self._model_query(context, VnfCluster).
+                     filter(VnfCluster.id == cluster_id))
+            query.update({'status': new_status})
+    
+    def _update_lb_policy(self, context, cluster_id, lb_result):
+        with context.session.begin(subtransactions=True):
+            query = (self._model_query(context, VnfCluster).
+                     filter(VnfCluster.id == cluster_id))
+            query.update({'policy_info': {'loadbalancer': lb_result}})
+
+    def _update_ha_policy(self, context, cluster_id, ha_policy):
+        with context.session.begin(subtransactions=True):
+            query = (self._model_query(context, VnfCluster).
+                     filter(VnfCluster.id == cluster_id))
+            query.update({'policy_info': ha_policy})
+
+    def _update_member_role(self, context, member_id, role):
+        with context.session.begin(subtransactions=True):
+            query = (self._model_query(context, VnfClusterMember).
+                     filter(VnfClusterMember.id == member_id))
+            query.update({'role': role})
+
+    def _update_member_lb_id(self, context, member_id, lb_member_id):
+        with context.session.begin(subtransactions=True):
+            query = (self._model_query(context, VnfClusterMember).
+                     filter(VnfClusterMember.id == member_id))
+            query.update({'lb_member_id': lb_member_id})
+
+    def _create_cluster_pre(self, context, cluster):
+        cluster_info = cluster['vnfcluster']
+        LOG.debug(_('cluster %s'), cluster_info)
+        tenant_id = self._get_tenant_id_for_create(context, cluster_info)
+        vnfcluster_id = str(uuid.uuid4())
+        name = cluster_info.get('name')
+        vnfd_id = cluster_info['vnfd_id']
+        active = cluster_info.get('active', 1)
+        standby = cluster_info.get('standby', 0)
+        with context.session.begin(subtransactions=True):
+            cluster_db = VnfCluster(id=vnfcluster_id,
+                                    tenant_id=tenant_id,
+                                    name=name,
+                                    vnfd_id=vnfd_id,
+                                    active=active,
+                                    standby=standby,
+                                    status=constants.ACTIVE)
+            context.session.add(cluster_db)
+
+        return self._make_cluster_dict(cluster_db)
+
+    def _create_cluster_member_pre(self, context, member):
+        member_id = str(uuid.uuid4())
+        cluster_id = member['cluster_id']
+        index = member['index']
+        role = member['role']
+        vnf_info = member['vnf_info']
+        with context.session.begin(subtransactions=True):
+            member_db = VnfClusterMember(id=member_id,
+                                         cluster_id=cluster_id,
+                                         index=index,
+                                         role=role,
+                                         vnf_info=vnf_info)
+            context.session.add(member_db)
+        return self._make_member_dict(member_db)
+
+
+
+    def get_vnfcluster(self, context, cluster_id, fields=None):
+        vnf_db = self._get_resource(context, VnfCluster, cluster_id)
+        return self._make_cluster_dict(vnf_db, fields)
+
+    def get_vnfclusters(self, context, filters=None, fields=None):
+        return self._get_collection(context, VnfCluster, self._make_cluster_dict,
+                                    filters=filters, fields=fields)
+
+    def delete_vnfcluster(self, context, vnfcluster_id):
+        with context.session.begin(subtransactions=True):
+            vnfclustermember_db = context.session.query(VnfClusterMember).filter_by(
+                cluster_id=vnfcluster_id).first()
+            if vnfclustermember_db is not None:
+                raise nfvo.VnfClusterInUse(cluster_id=vnfcluster_id)
+
+            vnfcluster_db = self._get_resource(context, VnfCluster,
+                                               vnfcluster_id)
+            context.session.delete(vnfcluster_db)
+
+    def get_vnfclustermember(self, context, cluster_id, fields=None):
+        vnfclustermember_db = self._get_resource(context, VnfClusterMember, cluster_id)
+        return self._make_member_dict(vnfclustermember_db, fields)
+
+    def get_vnfclustermembers(self, context, filters=None, fields=None):
+            return self._get_collection(context, VnfClusterMember,
+                                        self._make_member_dict,
+                                        filters=filters, fields=fields)
+
+    def delete_vnfclustermember(self, context, vnfcluster_id):
+        with context.session.begin(subtransactions=True):
+            vnfclustermember_db = self._get_resource(context, VnfClusterMember,
+                                                     vnfcluster_id)
+            context.session.delete(vnfclustermember_db)
